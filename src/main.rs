@@ -1,21 +1,23 @@
 // A toy debugger for x86-64 linux.
 
-use std::ffi::CString;
+mod breakpoint;
 mod debugger;
+
 use debugger::Debugger;
+use std::ffi::CString;
 
 fn main() -> anyhow::Result<()> {
     // collect the args
     let args = std::env::args().collect::<Vec<String>>();
     if args.len() < 2 {
         eprintln!("Usage: {} <program name>", args[0]);
-        std::process::exit(1);
+        std::process::exit(-1);
     }
 
     match unsafe { nix::unistd::fork() } {
-        Ok(nix::unistd::ForkResult::Parent { child, .. }) => {
+        Ok(nix::unistd::ForkResult::Parent { child }) => {
             println!("Started debugger");
-            let debugger = Debugger::new(&args[1], child);
+            let mut debugger = Debugger::new(&args[1], child);
             debugger.run()?;
         }
         Ok(nix::unistd::ForkResult::Child) => {
@@ -31,7 +33,7 @@ fn main() -> anyhow::Result<()> {
         }
         Err(e) => {
             eprintln!("Error forking: {}", e);
-            std::process::exit(1);
+            std::process::exit(-1);
         }
     }
 
