@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 nix = { version = "0.26.2", features = ["process", "signal", "ptrace"] }
 anyhow = "1.0.74"
+libc = "0.2.155"
