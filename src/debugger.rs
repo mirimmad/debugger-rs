@@ -115,11 +115,10 @@ impl Debugger {
         Ok(())
     }
 
-    fn continue_execution(&self) -> anyhow::Result<()> {
+    fn continue_execution(&mut self) -> anyhow::Result<()> {
+        self.step_over_breakpoint()?;
         ptrace::cont(self.pid, None)?;
-
-        let status = wait::waitpid(self.pid, None)?;
-        eprintln!("received signal: {:?}", status);
+        self.wait_for_signal()?;
         Ok(())
     }
 
@@ -162,6 +161,47 @@ impl Debugger {
         unsafe {
             ptrace::write(self.pid, addr as *mut c_void, value as *mut c_void)?;
         }
+        Ok(())
+    }
+
+    fn get_pc(&self) -> anyhow::Result<u64> {
+        let regs = ptrace::getregs(self.pid)?;
+        Ok(regs.rip)
+    }
+
+    fn set_pc(&mut self, pc: u64) -> anyhow::Result<()> {
+        self.set_register_value(Register::Rip, pc)
+    }
+
+    fn step_over_breakpoint(&mut self) -> anyhow::Result<()> {
+        let possible_breakpoint = self.get_pc()? - 1;
+
+        let should_step = self
+            .breakpoints
+            .get(&possible_breakpoint)
+            .map(|b| b.is_enabled())
+            .unwrap_or(false);
+
+        if should_step {
+            self.set_pc(possible_breakpoint)?;
+            if let Some(breakpoint) = self.breakpoints.get_mut(&possible_breakpoint) {
+                breakpoint.disable()?;
+            }
+
+            ptrace::step(self.pid, None)?;
+            self.wait_for_signal()?;
+
+            if let Some(breakpoint) = self.breakpoints.get_mut(&possible_breakpoint) {
+                breakpoint.enable()?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn wait_for_signal(&self) -> anyhow::Result<()> {
+        let status = wait::waitpid(self.pid, None)?;
+        eprintln!("received signal: {:?}", status);
         Ok(())
     }
 }

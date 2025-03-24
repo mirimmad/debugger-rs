@@ -31,8 +31,7 @@ impl Breakpoint {
     pub fn enable(&mut self) -> anyhow::Result<()> {
         let data = ptrace::read(self.pid, self.addr as *mut c_void)?;
         let saved_data = data & 0xff;
-        let int3_encode = 0xcc;
-        let data_with_int3 = (data & !0xff) | int3_encode;
+        let data_with_int3 = (data & !0xff) | 0xCC;
         unsafe {
             ptrace::write(
                 self.pid,
