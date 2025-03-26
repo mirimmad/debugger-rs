@@ -26,6 +26,8 @@ fn main() -> anyhow::Result<()> {
             nix::sys::ptrace::traceme()?;
             let program_name = CString::new(args[1].as_bytes())?;
             let args = CString::new("")?;
+            // set process personality to no address space randomization
+            unsafe { libc::personality(libc::ADDR_NO_RANDOMIZE as u64) };
             nix::unistd::execve(
                 program_name.as_ref(),
                 &[program_name.as_ref()],

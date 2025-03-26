@@ -77,7 +77,8 @@ impl Debugger {
                             let reg = parts.get(2).expect("No register provided");
                             let value = parts.get(3).expect("No value provided");
                             let reg = Register::get_reg_by_name(reg).expect("Invalid register");
-                            let value = u64::from_str_radix(value, 16).expect("Invalid value");
+                            let value =
+                                u64::from_str_radix(&value[2..], 16).expect("Invalid value");
                             Ok(Command::WriteRegister(reg, value))
                         } else {
                             anyhow::bail!("Unknown subcommand: {} {}", cmd, subcmd);
