@@ -145,9 +145,10 @@ impl Debugger {
 
     fn dump_registers(&self) -> anyhow::Result<()> {
         // dump all registers
+        let regs = ptrace::getregs(self.pid)?;
         for reg in REGISTER_NAMES {
             let reg = Register::get_reg_by_name(reg).unwrap();
-            let value = self.get_register_value(&reg)?;
+            let value = reg.from_regs(&regs);
             println!("{:?}: 0x{:x}", reg, value);
         }
 
