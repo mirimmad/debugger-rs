@@ -1,15 +1,43 @@
 use crate::breakpoint::Breakpoint;
 use crate::registers::{Register, REGISTER_NAMES};
 use anyhow::Context;
+use lazy_static::lazy_static;
 use nix::sys::{ptrace, wait};
 use nix::unistd::Pid;
+use object::{Object, ObjectSection};
+use std::borrow::{self};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::io::Write;
-pub struct Debugger {
+
+macro_rules! attr_to_number {
+    ($attr_value:expr) => {{
+        match $attr_value {
+            gimli::AttributeValue::Addr(addr) => Ok(addr),
+            gimli::AttributeValue::Udata(data) => Ok(data),
+            //gimli::AttributeValue::Sdata(data) => Ok(data),
+
+            _ => anyhow::bail!("Attribute value is not a number: {:?}", $attr_value),
+        }
+    } as anyhow::Result<u64>};
+}
+
+lazy_static! {
+    static ref PROG_NAME: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    static ref MMAP: memmap2::Mmap = {
+        let prog_name = PROG_NAME.lock().unwrap();
+        let file = std::fs::File::open(&*prog_name).unwrap();
+        let mmap = unsafe { memmap2::Mmap::map(&file).unwrap() };
+        mmap
+    };
+}
+
+pub struct Debugger<'a> {
     prog_name: String,
     pid: Pid,
     breakpoints: HashMap<u64, Breakpoint>,
+    elf: object::File<'a>,
+    endianess: gimli::RunTimeEndian,
 }
 
 #[derive(Debug)]
@@ -23,19 +51,28 @@ enum Command {
     Unknown(String),
 }
 
-impl Debugger {
+impl<'a> Debugger<'a> {
     pub fn new(prog_name: &str, pid: Pid) -> Self {
+        PROG_NAME.lock().unwrap().push_str(prog_name);
+        let elf = object::File::parse(&**MMAP).expect("Failed to parse object file");
+        let endianess = if elf.is_little_endian() {
+            gimli::RunTimeEndian::Little
+        } else {
+            gimli::RunTimeEndian::Big
+        };
         Self {
             prog_name: prog_name.to_string(),
             pid,
             breakpoints: HashMap::new(),
+            elf,
+            endianess,
         }
     }
 
     pub fn run(&mut self) -> anyhow::Result<()> {
         let status = wait::waitpid(self.pid, None)?;
         println!("Program {} received signal {:?}", self.prog_name, status);
-
+        println!("Function: {}", self.get_function_form_pc(0x40113f)?);
         // a loop for reading user input
         // break when user input "q"
 
@@ -205,5 +242,66 @@ impl Debugger {
         let status = wait::waitpid(self.pid, None)?;
         eprintln!("received signal: {:?}", status);
         Ok(())
+    }
+
+    // get info about a function from PC
+    fn get_function_form_pc(&self, pc: u64) -> anyhow::Result<String> {
+        let borrow_section =
+            |section| gimli::EndianSlice::new(borrow::Cow::as_ref(section), self.endianess);
+        let load_section = |id: gimli::SectionId| -> anyhow::Result<borrow::Cow<[u8]>> {
+            Ok(match self.elf.section_by_name(id.name()) {
+                Some(section) => section.uncompressed_data()?,
+                None => borrow::Cow::Borrowed(&[]),
+            })
+        };
+        let dwarf_sections = gimli::DwarfSections::load(&load_section)?;
+        let dwarf = dwarf_sections.borrow(borrow_section);
+        let mut iter = dwarf.units();
+
+        let mut low_pc = None;
+        let mut high_pc = None;
+        let mut name = None;
+
+        while let Some(header) = iter.next()? {
+            let unit = dwarf.unit(header)?;
+            let mut entries = unit.entries();
+            let unit = unit.unit_ref(&dwarf);
+
+            while let Some((_, entry)) = entries.next_dfs()? {
+                if entry.tag() == gimli::constants::DW_TAG_subprogram {
+                    let mut attrs = entry.attrs();
+
+                    while let Some(attr) = attrs.next()? {
+                        if attr.name() == gimli::constants::DW_AT_low_pc {
+                            low_pc = Some(attr_to_number!(attr.value())?);
+                            println!("attr value: {:?} Low PC: {:x?}", attr.value(), low_pc);
+                        }
+                        if attr.name() == gimli::constants::DW_AT_high_pc {
+                            //high_pc = attr.value().sdata_value().unwrap_or(-1) as i64;
+                            high_pc = Some(attr_to_number!(attr.value())?);
+                            println!("High PC: {:?}", high_pc);
+                        }
+                        if let Ok(s) = unit.attr_string(attr.value()) {
+                            name = Some(s.to_string()?);
+                        }
+                    }
+
+                    if let (Some(low_pc), Some(high_pc), Some(name)) = (low_pc, high_pc, name) {
+                        // print all values
+                        println!(
+                            "PC: {:?}, Low PC: {:?}, High PC: {:?}, Name: {:?}",
+                            pc,
+                            low_pc,
+                            low_pc + high_pc,
+                            name
+                        );
+                        if pc >= low_pc && pc < (low_pc + high_pc) {
+                            return Ok(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        anyhow::bail!("No function found for PC: {:x}", pc);
     }
 }
