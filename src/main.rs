@@ -3,6 +3,7 @@
 mod breakpoint;
 mod debugger;
 mod registers;
+mod types;
 
 use debugger::Debugger;
 use std::ffi::CString;

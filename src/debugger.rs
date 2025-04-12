@@ -8,7 +8,8 @@ use object::{Object, ObjectSection};
 use std::borrow::{self};
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::io::Write;
+use std::io::{BufRead, Write};
+use std::path::PathBuf;
 
 macro_rules! attr_to_number {
     ($attr_value:expr) => {{
@@ -38,6 +39,7 @@ pub struct Debugger<'a> {
     breakpoints: HashMap<u64, Breakpoint>,
     elf: object::File<'a>,
     endianess: gimli::RunTimeEndian,
+    load_address: u64,
 }
 
 #[derive(Debug)]
@@ -66,13 +68,19 @@ impl<'a> Debugger<'a> {
             breakpoints: HashMap::new(),
             elf,
             endianess,
+            load_address: 0,
         }
     }
 
     pub fn run(&mut self) -> anyhow::Result<()> {
-        let status = wait::waitpid(self.pid, None)?;
-        println!("Program {} received signal {:?}", self.prog_name, status);
-        println!("Function: {}", self.get_function_form_pc(0x40113f)?);
+        self.wait_for_signal()?;
+        //println!("Program {} received signal {:?}", self.prog_name, status);
+        self.initialise_load_address()?;
+        //println!("Function: {}", self.get_function_form_pc(0x40113f)?);
+        //let line_address = self.get_line_entry_form_pc(0x401126)?;
+        //println!("Line: {:?}", line_address);
+        //self.print_source_line(&line_address)?;
+
         // a loop for reading user input
         // break when user input "q"
 
@@ -96,10 +104,10 @@ impl<'a> Debugger<'a> {
                 cmd if "quit".starts_with(cmd) => Ok(Command::Quit),
                 cmd if "continue".starts_with(cmd) => Ok(Command::Continue),
                 cmd if "breakpoint".starts_with(cmd) => {
-                    let addr = parts.get(1).expect("No address provided");
+                    let addr = parts.get(1).context("No address provided")?;
                     // skip first two chars
                     let addr = &addr[2..];
-                    let addr = u64::from_str_radix(addr, 16).expect("Invalid address");
+                    let addr = u64::from_str_radix(addr, 16).context("Invalid address")?;
                     Ok(Command::SetBreakpoint(addr))
                 }
                 cmd if "register".starts_with(cmd) => {
@@ -107,15 +115,15 @@ impl<'a> Debugger<'a> {
                         if *subcmd == "dump" {
                             Ok(Command::RegisterDump)
                         } else if *subcmd == "read" {
-                            let reg = parts.get(2).expect("No register provided");
+                            let reg = parts.get(2).context("No register provided")?;
                             let reg = Register::get_reg_by_name(reg).context("Invalid register")?;
                             Ok(Command::ReadRegister(reg))
                         } else if *subcmd == "write" {
-                            let reg = parts.get(2).expect("No register provided");
-                            let value = parts.get(3).expect("No value provided");
-                            let reg = Register::get_reg_by_name(reg).expect("Invalid register");
+                            let reg = parts.get(2).context("No register provided")?;
+                            let value = parts.get(3).context("No value provided")?;
+                            let reg = Register::get_reg_by_name(reg).context("Invalid register")?;
                             let value =
-                                u64::from_str_radix(&value[2..], 16).expect("Invalid value");
+                                u64::from_str_radix(&value[2..], 16).context("Invalid value")?;
                             Ok(Command::WriteRegister(reg, value))
                         } else {
                             anyhow::bail!("Unknown subcommand: {} {}", cmd, subcmd);
@@ -213,8 +221,8 @@ impl<'a> Debugger<'a> {
     }
 
     fn step_over_breakpoint(&mut self) -> anyhow::Result<()> {
-        let possible_breakpoint = self.get_pc()? - 1;
-
+        //let possible_breakpoint = self.get_pc()? - 1;
+        let possible_breakpoint = self.get_pc()?;
         let should_step = self
             .breakpoints
             .get(&possible_breakpoint)
@@ -238,10 +246,33 @@ impl<'a> Debugger<'a> {
         Ok(())
     }
 
-    fn wait_for_signal(&self) -> anyhow::Result<()> {
+    fn wait_for_signal(&mut self) -> anyhow::Result<()> {
         let status = wait::waitpid(self.pid, None)?;
-        eprintln!("received signal: {:?}", status);
+        let siginfo = self.get_sig_info()?;
+        match siginfo.si_signo {
+            libc::SIGTRAP => self.handle_sigtrap(siginfo)?,
+            libc::SIGSEGV => println!("Segmentation fault {}", siginfo.si_code),
+            _ => eprintln!("received signal: {:?}", status),
+        }
         Ok(())
+    }
+
+    fn handle_sigtrap(&mut self, siginfo: libc::siginfo_t) -> anyhow::Result<()> {
+        match siginfo.si_code {
+            libc::SI_KERNEL | libc::TRAP_BRKPT => {
+                self.set_pc(self.get_pc()? - 1)?;
+                println!("Breakpoint hit at {:x}", self.get_pc()?);
+                let offset_pc = self.offset_load_address(self.get_pc()?);
+                let line_entry = self.get_line_entry_form_pc(offset_pc)?;
+                self.print_source_line(&line_entry)?;
+                Ok(())
+            }
+            libc::TRAP_TRACE => Ok(()),
+            _ => {
+                println!("Unknown signal code: {}", siginfo.si_code);
+                Ok(())
+            }
+        }
     }
 
     // get info about a function from PC
@@ -274,12 +305,12 @@ impl<'a> Debugger<'a> {
                     while let Some(attr) = attrs.next()? {
                         if attr.name() == gimli::constants::DW_AT_low_pc {
                             low_pc = Some(attr_to_number!(attr.value())?);
-                            println!("attr value: {:?} Low PC: {:x?}", attr.value(), low_pc);
+                            //println!("attr value: {:?} Low PC: {:x?}", attr.value(), low_pc);
                         }
                         if attr.name() == gimli::constants::DW_AT_high_pc {
                             //high_pc = attr.value().sdata_value().unwrap_or(-1) as i64;
                             high_pc = Some(attr_to_number!(attr.value())?);
-                            println!("High PC: {:?}", high_pc);
+                            //println!("High PC: {:?}", high_pc);
                         }
                         if let Ok(s) = unit.attr_string(attr.value()) {
                             name = Some(s.to_string()?);
@@ -288,13 +319,13 @@ impl<'a> Debugger<'a> {
 
                     if let (Some(low_pc), Some(high_pc), Some(name)) = (low_pc, high_pc, name) {
                         // print all values
-                        println!(
+                        /* println!(
                             "PC: {:?}, Low PC: {:?}, High PC: {:?}, Name: {:?}",
                             pc,
                             low_pc,
                             low_pc + high_pc,
                             name
-                        );
+                        ); */
                         if pc >= low_pc && pc < (low_pc + high_pc) {
                             return Ok(name.to_string());
                         }
@@ -303,5 +334,91 @@ impl<'a> Debugger<'a> {
             }
         }
         anyhow::bail!("No function found for PC: {:x}", pc);
+    }
+
+    fn get_line_entry_form_pc(&self, pc: u64) -> anyhow::Result<crate::types::LineAddress> {
+        let borrow_section =
+            |section| gimli::EndianSlice::new(borrow::Cow::as_ref(section), self.endianess);
+        let load_section = |id: gimli::SectionId| -> anyhow::Result<borrow::Cow<[u8]>> {
+            Ok(match self.elf.section_by_name(id.name()) {
+                Some(section) => section.uncompressed_data()?,
+                None => borrow::Cow::Borrowed(&[]),
+            })
+        };
+        let dwarf_sections = gimli::DwarfSections::load(&load_section)?;
+        let dwarf = dwarf_sections.borrow(borrow_section);
+        let mut iter = dwarf.units();
+
+        while let Some(header) = iter.next()? {
+            let unit = dwarf.unit(header)?;
+
+            let unit = unit.unit_ref(&dwarf);
+
+            if let Some(line_table) = unit.line_program.clone() {
+                let mut rows = line_table.rows();
+                while let Some((header, row)) = rows.next_row()? {
+                    let line = row.line().ok_or(anyhow::anyhow!("No line found"))?;
+                    let column = match row.column() {
+                        gimli::ColumnType::Column(column) => column.get(),
+                        gimli::ColumnType::LeftEdge => 0,
+                    };
+                    let addr = row.address();
+                    if addr == pc {
+                        let file = row.file(header).ok_or(anyhow::anyhow!("No file found"))?;
+                        let dir = file
+                            .directory(header)
+                            .ok_or(anyhow::anyhow!("No directory found"))?;
+                        let file_str = unit.attr_string(file.path_name())?.to_string()?;
+                        let dir_str = unit.attr_string(dir)?.to_string()?;
+                        let path = PathBuf::from(dir_str).join(file_str);
+                        let line_address = crate::types::LineAddress {
+                            line: line.get(),
+                            column,
+                            address: addr,
+                            filepath: path,
+                        };
+                        return Ok(line_address);
+                    }
+                }
+            }
+        }
+
+        anyhow::bail!("No line entry found for PC: {:x}", pc);
+    }
+
+    fn initialise_load_address(&mut self) -> anyhow::Result<()> {
+        let kind = self.elf.kind();
+        if kind == object::ObjectKind::Dynamic {
+            let maps_file = std::fs::File::open(format!("/proc/{}/maps", self.pid))?;
+            // read the first line of the file
+            let reader = std::io::BufReader::new(maps_file);
+            let Some(Ok(line)) = reader.lines().next() else {
+                anyhow::bail!("Failed to read line from maps file");
+            };
+            let parts: Vec<&str> = line.split('-').collect();
+            let start_addr = u64::from_str_radix(parts[0], 16)?;
+            self.load_address = start_addr;
+        }
+        Ok(())
+    }
+
+    fn offset_load_address(&self, addr: u64) -> u64 {
+        addr - self.load_address
+    }
+
+    fn print_source_line(&self, line_address: &crate::types::LineAddress) -> anyhow::Result<()> {
+        let file = std::fs::File::open(line_address.filepath.clone())?;
+        let reader = std::io::BufReader::new(file);
+        let mut lines = reader.lines();
+        let line = lines.nth(line_address.line as usize).unwrap()?;
+        println!("{} | {}", line_address.line, line);
+        let space = " ".repeat(line_address.column as usize);
+        println!("   {}{}", space, "^");
+        Ok(())
+    }
+
+    fn get_sig_info(&self) -> anyhow::Result<libc::siginfo_t> {
+        let siginfo = nix::sys::ptrace::getsiginfo(self.pid)?;
+        Ok(siginfo)
     }
 }
