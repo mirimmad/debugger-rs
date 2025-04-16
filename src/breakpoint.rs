@@ -3,6 +3,7 @@ use nix::sys::ptrace;
 use nix::unistd::Pid;
 use std::ffi::c_void;
 
+#[derive(Debug)]
 pub struct Breakpoint {
     pid: Pid,
     addr: u64,

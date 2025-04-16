@@ -7,3 +7,10 @@ pub struct LineAddress {
     pub address: u64,
     pub filepath: PathBuf,
 }
+
+#[derive(Debug, Clone)]
+pub struct Function {
+    pub name: String,
+    pub low_pc: u64,
+    pub high_pc: u64,
+}
