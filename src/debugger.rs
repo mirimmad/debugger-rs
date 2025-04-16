@@ -46,7 +46,7 @@ pub struct Debugger<'a> {
 enum Command {
     Quit,
     Continue,
-    SetBreakpoint(u64),
+    SetBreakpoint(String),
     RegisterDump,
     ReadRegister(Register),
     WriteRegister(Register, u64),
@@ -89,6 +89,7 @@ impl<'a> Debugger<'a> {
         //println!("Line entries: {:?}", self.get_all_line_entries(0x401126)?);
         // a loop for reading user input
         // break when user input "q"
+        // self.set_break_point_line("step.c", 30)?;
 
         loop {
             let mut input = String::new();
@@ -110,11 +111,8 @@ impl<'a> Debugger<'a> {
                 cmd if "quit".starts_with(cmd) => Ok(Command::Quit),
                 cmd if "continue".starts_with(cmd) => Ok(Command::Continue),
                 cmd if "breakpoint".starts_with(cmd) => {
-                    let addr = parts.get(1).context("No address provided")?;
-                    // skip first two chars
-                    let addr = &addr[2..];
-                    let addr = u64::from_str_radix(addr, 16).context("Invalid address")?;
-                    Ok(Command::SetBreakpoint(addr))
+                    let addr = parts.get(1).context("No subcommand provided")?;
+                    Ok(Command::SetBreakpoint(addr.to_string()))
                 }
                 cmd if "register".starts_with(cmd) => {
                     if let Some(subcmd) = parts.get(1) {
@@ -171,8 +169,8 @@ impl<'a> Debugger<'a> {
         match command {
             Command::Quit => std::process::exit(0),
             Command::Continue => self.continue_execution()?,
-            Command::SetBreakpoint(addr) => {
-                self.set_breakpoint(addr)?;
+            Command::SetBreakpoint(cmd) => {
+                self.set_breakpoint_cmd(cmd)?;
             }
             Command::RegisterDump => self.dump_registers()?,
             Command::ReadRegister(reg) => {
@@ -209,12 +207,29 @@ impl<'a> Debugger<'a> {
         self.wait_for_signal()?;
         Ok(())
     }
-
     fn set_breakpoint(&mut self, addr: u64) -> anyhow::Result<()> {
         eprintln!("Setting breakpoint at address: {:x}", addr);
         let mut breakpoint = Breakpoint::new(self.pid, addr);
         breakpoint.enable()?;
         self.breakpoints.insert(addr, breakpoint);
+        Ok(())
+    }
+
+    fn set_breakpoint_cmd(&mut self, cmd: String) -> anyhow::Result<()> {
+        //let cmd = &cmd;
+        if cmd.starts_with("0x") {
+            let addr = &cmd[2..];
+            //skip first two chars
+            let addr = u64::from_str_radix(addr, 16).context("Invalid address")?;
+            self.set_breakpoint(addr)?;
+        } else if cmd.contains(":") {
+            let parts: Vec<&str> = cmd.split(':').collect();
+            let file = parts[0];
+            let line = parts[1];
+            self.set_break_point_line(file, line.parse::<u64>()?)?;
+        } else {
+            self.set_break_point_function(&cmd)?;
+        }
         Ok(())
     }
 
@@ -591,6 +606,70 @@ impl<'a> Debugger<'a> {
         }
 
         anyhow::bail!("No line entry found for PC: {:x}", pc);
+    }
+
+    fn set_break_point_function(&mut self, name: &str) -> anyhow::Result<()> {
+        let function = self.get_function_form_pc(self.get_pc()?)?;
+        if function.name == name {
+            self.set_breakpoint(function.low_pc)?;
+        }
+        Ok(())
+    }
+
+    fn set_break_point_line(&mut self, file: &str, line_number: u64) -> anyhow::Result<()> {
+        let borrow_section =
+            |section| gimli::EndianSlice::new(borrow::Cow::as_ref(section), self.endianess);
+        let load_section = |id: gimli::SectionId| -> anyhow::Result<borrow::Cow<[u8]>> {
+            Ok(match self.elf.section_by_name(id.name()) {
+                Some(section) => section.uncompressed_data()?,
+                None => borrow::Cow::Borrowed(&[]),
+            })
+        };
+        let dwarf_sections = gimli::DwarfSections::load(&load_section)?;
+        let dwarf = dwarf_sections.borrow(borrow_section);
+
+        // Iterate through compilation units
+
+        let mut iter = dwarf.units();
+        while let Some(header) = iter.next()? {
+            let unit = dwarf.unit(header)?;
+
+            let unit = unit.unit_ref(&dwarf);
+
+            let mut entries = unit.entries();
+
+            while let Some((_, entry)) = entries.next_dfs()? {
+                if entry.tag() == gimli::constants::DW_TAG_compile_unit {
+                    let mut attrs = entry.attrs();
+                    while let Some(attr) = attrs.next()? {
+                        if attr.name() == gimli::constants::DW_AT_name {
+                            if let Ok(s) = unit.attr_string(attr.value()) {
+                                let name = Some(s.to_string()?);
+                                if name == Some(file) {
+                                    if let Some(line_table) = unit.line_program.clone() {
+                                        let mut rows = line_table.rows();
+                                        while let Some((_, row)) = rows.next_row()? {
+                                            let line = row
+                                                .line()
+                                                .ok_or(anyhow::anyhow!("No line found"))?;
+                                            let line = line.get();
+                                            if line == line_number && row.is_stmt() {
+                                                self.set_breakpoint(
+                                                    self.offset_dwarf_address(row.address()),
+                                                )?;
+                                                return Ok(());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        anyhow::bail!("Could not find line {} in file {}", line_number, file)
     }
 
     fn get_all_line_entries(&self, addr: u64) -> anyhow::Result<Vec<crate::types::LineAddress>> {
