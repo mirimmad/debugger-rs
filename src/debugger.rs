@@ -4,7 +4,7 @@ use anyhow::Context;
 use lazy_static::lazy_static;
 use nix::sys::{ptrace, wait};
 use nix::unistd::Pid;
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, ObjectSymbol};
 use std::borrow::{self};
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -56,6 +56,7 @@ enum Command {
     StepOut,
     StepOver,
     InfoBreakpoints,
+    Symbol(String),
     Unknown(String),
 }
 
@@ -90,6 +91,7 @@ impl<'a> Debugger<'a> {
         // a loop for reading user input
         // break when user input "q"
         // self.set_break_point_line("step.c", 30)?;
+        //println!("Symbol: {:?}", self.lookup_symbol("main")?);
 
         loop {
             let mut input = String::new();
@@ -152,10 +154,15 @@ impl<'a> Debugger<'a> {
                     let addr = u64::from_str_radix(&addr[2..], 16).context("Invalid address")?;
                     Ok(Command::ReadMemory(addr))
                 }
+
                 cmd if "step".starts_with(cmd) => Ok(Command::StepIn),
                 cmd if "next".starts_with(cmd) => Ok(Command::StepOver),
                 cmd if "finish".starts_with(cmd) => Ok(Command::StepOut),
                 cmd if "stepi".starts_with(cmd) => Ok(Command::SingleStepInstruction),
+                cmd if "symbol".starts_with(cmd) => {
+                    let symbol_name = parts.get(1).context("No symbol name provided")?;
+                    Ok(Command::Symbol(symbol_name.to_string()))
+                }
                 cmd => Ok(Command::Unknown(cmd.to_owned())),
             }
         } else {
@@ -195,6 +202,10 @@ impl<'a> Debugger<'a> {
             Command::StepIn => self.step_in()?,
             Command::StepOut => self.step_out()?,
             Command::StepOver => self.step_over()?,
+            Command::Symbol(symbol_name) => {
+                let symbol = self.lookup_symbol(&symbol_name)?;
+                println!("found '{}' at {:x}", symbol.name, symbol.address);
+            }
             Command::Unknown(cmd) => eprintln!("Unknown command: {}", cmd),
         }
 
@@ -758,6 +769,21 @@ impl<'a> Debugger<'a> {
         let space = " ".repeat(line_address.column as usize);
         println!("   {}{}", space, "^");
         Ok(())
+    }
+
+    fn lookup_symbol(&self, symbol_name: &str) -> anyhow::Result<crate::types::Symbol> {
+        let syms = self.elf.symbols();
+        for sym in syms {
+            if let Ok(name) = sym.name() {
+                if name == symbol_name {
+                    return Ok(crate::types::Symbol {
+                        name: name.to_string(),
+                        address: sym.address(),
+                    });
+                }
+            }
+        }
+        anyhow::bail!("Symbol not found: {}", symbol_name);
     }
 
     fn get_sig_info(&self) -> anyhow::Result<libc::siginfo_t> {

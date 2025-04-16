@@ -14,3 +14,9 @@ pub struct Function {
     pub low_pc: u64,
     pub high_pc: u64,
 }
+
+#[derive(Debug, Clone)]
+pub struct Symbol {
+    pub name: String,
+    pub address: u64,
+}
