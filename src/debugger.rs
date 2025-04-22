@@ -57,6 +57,7 @@ enum Command {
     StepOver,
     InfoBreakpoints,
     Symbol(String),
+    Backtrace,
     Unknown(String),
 }
 
@@ -163,6 +164,7 @@ impl<'a> Debugger<'a> {
                     let symbol_name = parts.get(1).context("No symbol name provided")?;
                     Ok(Command::Symbol(symbol_name.to_string()))
                 }
+                cmd if "backtrace".starts_with(cmd) => Ok(Command::Backtrace),
                 cmd => Ok(Command::Unknown(cmd.to_owned())),
             }
         } else {
@@ -206,6 +208,7 @@ impl<'a> Debugger<'a> {
                 let symbol = self.lookup_symbol(&symbol_name)?;
                 println!("found '{}' at {:x}", symbol.name, symbol.address);
             }
+            Command::Backtrace => self.print_backtrace()?,
             Command::Unknown(cmd) => eprintln!("Unknown command: {}", cmd),
         }
 
@@ -784,6 +787,32 @@ impl<'a> Debugger<'a> {
             }
         }
         anyhow::bail!("Symbol not found: {}", symbol_name);
+    }
+
+    fn print_backtrace(&self) -> anyhow::Result<()> {
+        let mut frame_number = 1;
+        let mut print_frame = |func: &crate::types::Function| -> anyhow::Result<()> {
+            println!("frame #{}: 0x{:x} {}", frame_number, func.low_pc, func.name);
+            frame_number += 1;
+            Ok(())
+        };
+
+        let mut current_function =
+            self.get_function_form_pc(self.offset_load_address(self.get_pc()?))?;
+        print_frame(&current_function)?;
+
+        let mut frame_pointer = self.get_register_value(&Register::Rbp)?;
+        let mut return_address = self.read_memory(frame_pointer + 8)? as u64;
+
+        while current_function.name != "main" {
+            current_function =
+                self.get_function_form_pc(self.offset_load_address(return_address))?;
+            print_frame(&current_function)?;
+            frame_pointer = self.read_memory(frame_pointer)? as u64;
+            return_address = self.read_memory(frame_pointer + 8)? as u64;
+        }
+
+        Ok(())
     }
 
     fn get_sig_info(&self) -> anyhow::Result<libc::siginfo_t> {
