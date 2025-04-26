@@ -1,7 +1,7 @@
 ## debugger-rs
 
 
-A simple toy debugger implementation in Rust This project demonstrates how to create a basic debugger that can control program execution, set breakpoints, inspect memory and registers, and analyze debug information.
+A simple toy debugger implementation for **x86-64 Linux** in Rust. This project demonstrates how to create a basic debugger that can control program execution, set breakpoints, inspect memory and registers, and analyze debug information.
 
 ## Features
 - Process control (start, stop, continue)
