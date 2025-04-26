@@ -42,7 +42,7 @@ read 0xABCD
 step (s)
 next (n)
 finish (f)
-stepi (si)
+stepi
 symbol (sym) NAME
 backtrace (bt)
 quit (q)
