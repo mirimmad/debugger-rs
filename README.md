@@ -15,8 +15,10 @@ A simple toy debugger implementation for **x86-64 Linux** in Rust. This project 
 ## Usage
 
 ```bash
-cargo run /path/to/your/program
+cargo run ./test/step
 ```
+Remeber to run the makefile in the test directory to build the test program.
+
 ## available commands
 
 The debugger supports command prefixes, so you can use shortened versions of commands. For example, 'b' instead of 'breakpoint', 'c' for 'continue', or 'i b' for 'info breakpoints'.
