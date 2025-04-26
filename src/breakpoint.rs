@@ -25,6 +25,7 @@ impl Breakpoint {
         self.enabled
     }
 
+    #[allow(dead_code)]
     pub fn get_address(&self) -> u64 {
         self.addr
     }

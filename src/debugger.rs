@@ -34,6 +34,7 @@ lazy_static! {
 }
 
 pub struct Debugger<'a> {
+    #[allow(dead_code)]
     prog_name: String,
     pid: Pid,
     breakpoints: HashMap<u64, Breakpoint>,
@@ -283,6 +284,7 @@ impl<'a> Debugger<'a> {
         Ok(ptrace::read(self.pid, addr as *mut c_void)?)
     }
 
+    #[allow(dead_code)]
     fn write_memory(&self, addr: u64, value: i64) -> anyhow::Result<()> {
         unsafe {
             ptrace::write(self.pid, addr as *mut c_void, value as *mut c_void)?;
