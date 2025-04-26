@@ -19,6 +19,10 @@ cargo run ./test/step
 ```
 Remeber to run the makefile in the test directory to build the test program.
 
+## Demo
+
+![Debugger Demo](./test/test.gif)
+
 ## available commands
 
 The debugger supports command prefixes, so you can use shortened versions of commands. For example, 'b' instead of 'breakpoint', 'c' for 'continue', or 'i b' for 'info breakpoints'.
