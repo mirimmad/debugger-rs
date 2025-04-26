@@ -15,6 +15,8 @@ fn main() -> anyhow::Result<()> {
         eprintln!("Usage: {} <program name>", args[0]);
         std::process::exit(-1);
     }
+    let program_name = CString::new(args[1].as_bytes())?;
+    let prog_args = CString::new("")?;
 
     match unsafe { nix::unistd::fork() } {
         Ok(nix::unistd::ForkResult::Parent { child }) => {
@@ -25,14 +27,12 @@ fn main() -> anyhow::Result<()> {
         Ok(nix::unistd::ForkResult::Child) => {
             println!("Child process ID: {}", nix::unistd::getpid());
             nix::sys::ptrace::traceme()?;
-            let program_name = CString::new(args[1].as_bytes())?;
-            let args = CString::new("")?;
             // set process personality to no address space randomization
             unsafe { libc::personality(libc::ADDR_NO_RANDOMIZE as u64) };
             nix::unistd::execve(
                 program_name.as_ref(),
                 &[program_name.as_ref()],
-                &[args.as_ref()],
+                &[prog_args.as_ref()],
             )?;
         }
         Err(e) => {
