@@ -44,6 +44,6 @@ next (n)
 finish (f)
 stepi
 symbol (sym) NAME
-backtrace (bt)
+backtrace (ba)
 quit (q)
 ```
